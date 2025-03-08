@@ -4,7 +4,7 @@ Problem Statement -- When customers of Confluent want to integrate Confluent Clo
 
 # Prometheus HTTP Service Discovery for Confluent Cloud
 
-This service provides an HTTP-based service discovery implementation for Prometheus to scrape metrics from Confluent Cloud.
+This service provides an HTTP-based service discovery implementation for Prometheus to scrape metrics metadata from Confluent Cloud.
 
 ## Overview
 
