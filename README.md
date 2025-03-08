@@ -1,3 +1,5 @@
+**Note:** This was an experiment with Claude Code, I don't know go, I don't write go, I just prompted.
+
 # Prometheus HTTP Service Discovery for Confluent Cloud
 
 This service provides an HTTP-based service discovery implementation for Prometheus to scrape metrics from Confluent Cloud.
