@@ -83,9 +83,10 @@ type KafkaClustersResponse struct {
 
 // SchemaRegistrySpec represents the specification of a Schema Registry instance
 type SchemaRegistrySpec struct {
-	DisplayName string `json:"display_name"`
-	Cloud       string `json:"cloud"`
-	Region      string `json:"region"`
+	DisplayName string                 `json:"display_name"`
+	Cloud       string                 `json:"cloud"`
+	Region      map[string]interface{} `json:"region"` // Region can be a complex object, not just string
+	Package     string                 `json:"package,omitempty"`
 }
 
 // SchemaRegistry represents a Schema Registry instance
@@ -566,15 +567,33 @@ func (c *Client) GetAllResources() ([]Resource, error) {
 					cloudProvider = "unknown"
 				}
 				
+				// Extract region information safely
+				var regionStr string
+				if regionVal, ok := sr.Spec.Region["id"]; ok {
+					if regionStr, ok = regionVal.(string); !ok {
+						regionStr = "unknown"
+					}
+				} else {
+					regionStr = "unknown"
+				}
+				
+				// Create labels map
+				labels := map[string]string{
+					"cloud_provider":   cloudProvider,
+					"environment_name": env.Name,
+					"name":             sr.Spec.DisplayName,
+					"region":           regionStr,
+				}
+				
+				// Add package if available
+				if sr.Spec.Package != "" {
+					labels["package"] = sr.Spec.Package
+				}
+				
 				resources = append(resources, Resource{
 					ID:           sr.ID,
 					ResourceType: "schema_registry",
-					Labels: map[string]string{
-						"cloud_provider":   cloudProvider,
-						"environment_name": env.Name,
-						"name":             sr.Spec.DisplayName,
-						"region":           sr.Spec.Region,
-					},
+					Labels:       labels,
 				})
 			}
 		}
