@@ -6,18 +6,20 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"time"
 )
 
 const (
 	baseURL                   = "https://api.confluent.cloud"
 	environmentsPath          = "/org/v2/environments"
-	kafkaClustersPath         = "/cmk/v2/clusters?environment=%s"
-	schemaRegistryPath        = "/srcm/v2/clusters?environment=%s"
-	ksqlPath                  = "/ksqldbcm/v2/clusters?environment=%s"
-	computePoolsPath          = "/fcpm/v2/compute-pools?environment=%s"
+	kafkaClustersPath         = "/cmk/v2/clusters"
+	schemaRegistryPath        = "/srcm/v2/clusters"
+	ksqlPath                  = "/ksqldbcm/v2/clusters"
+	computePoolsPath          = "/fcpm/v2/compute-pools"
 	connectorsBasePath        = "/connect/v1/environments/%s/clusters/%s/connectors"
 	defaultTimeout            = 30 * time.Second
+	defaultPageSize           = 100
 )
 
 // Client represents a Confluent Cloud API client
@@ -36,6 +38,12 @@ type Environment struct {
 // EnvironmentsResponse represents the response from the environments API
 type EnvironmentsResponse struct {
 	Data []Environment `json:"data"`
+	Metadata struct {
+		Pagination struct {
+			Total  int    `json:"total"`
+			Next   string `json:"next"`
+		} `json:"pagination"`
+	} `json:"metadata"`
 }
 
 // Resource represents a Confluent Cloud resource with metadata
@@ -65,6 +73,12 @@ type KafkaCluster struct {
 // KafkaClustersResponse represents the response from the Kafka clusters API
 type KafkaClustersResponse struct {
 	Data []KafkaCluster `json:"data"`
+	Metadata struct {
+		Pagination struct {
+			Total  int    `json:"total"`
+			Next   string `json:"next"`
+		} `json:"pagination"`
+	} `json:"metadata"`
 }
 
 // SchemaRegistrySpec represents the specification of a Schema Registry instance
@@ -86,6 +100,12 @@ type SchemaRegistry struct {
 // SchemaRegistryResponse represents the response from the Schema Registry API
 type SchemaRegistryResponse struct {
 	Data []SchemaRegistry `json:"data"`
+	Metadata struct {
+		Pagination struct {
+			Total  int    `json:"total"`
+			Next   string `json:"next"`
+		} `json:"pagination"`
+	} `json:"metadata"`
 }
 
 // KsqlDBSpec represents the specification of a KSQL database
@@ -107,6 +127,12 @@ type KsqlDB struct {
 // KsqlDBResponse represents the response from the KSQL API
 type KsqlDBResponse struct {
 	Data []KsqlDB `json:"data"`
+	Metadata struct {
+		Pagination struct {
+			Total  int    `json:"total"`
+			Next   string `json:"next"`
+		} `json:"pagination"`
+	} `json:"metadata"`
 }
 
 // ComputePoolSpec represents the specification of a compute pool
@@ -128,6 +154,12 @@ type ComputePool struct {
 // ComputePoolsResponse represents the response from the compute pools API
 type ComputePoolsResponse struct {
 	Data []ComputePool `json:"data"`
+	Metadata struct {
+		Pagination struct {
+			Total  int    `json:"total"`
+			Next   string `json:"next"`
+		} `json:"pagination"`
+	} `json:"metadata"`
 }
 
 // Connector represents a connector
@@ -148,205 +180,300 @@ func NewClient(apiKey, apiSecret string) *Client {
 	}
 }
 
-// GetEnvironments retrieves environments from Confluent Cloud
+// makeRequest performs an HTTP request and returns the response body
+func (c *Client) makeRequest(method, path string, queryParams map[string]string) ([]byte, error) {
+	// Build URL with query parameters
+	reqURL, err := url.Parse(baseURL + path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse URL: %w", err)
+	}
+	
+	// Add query parameters
+	query := reqURL.Query()
+	for key, value := range queryParams {
+		query.Add(key, value)
+	}
+	reqURL.RawQuery = query.Encode()
+	
+	// Create request
+	req, err := http.NewRequest(method, reqURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	
+	req.SetBasicAuth(c.apiKey, c.apiSecret)
+	
+	// Execute request
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	// Read response body
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	
+	// Check status code
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned non-200 status: %d, body: %s", resp.StatusCode, string(body))
+	}
+	
+	return body, nil
+}
+
+// GetEnvironments retrieves all environments from Confluent Cloud with pagination
 func (c *Client) GetEnvironments() ([]Environment, error) {
 	log.Println("Fetching environments from Confluent Cloud API")
-	req, err := http.NewRequest(http.MethodGet, baseURL+environmentsPath, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	
+	var allEnvironments []Environment
+	nextPageToken := ""
+	
+	for {
+		// Prepare query parameters
+		queryParams := map[string]string{
+			"page_size": fmt.Sprintf("%d", defaultPageSize),
+		}
+		
+		if nextPageToken != "" {
+			queryParams["page_token"] = nextPageToken
+		}
+		
+		// Make request
+		body, err := c.makeRequest(http.MethodGet, environmentsPath, queryParams)
+		if err != nil {
+			return nil, err
+		}
+		
+		// Parse response
+		var envResp EnvironmentsResponse
+		if err := json.Unmarshal(body, &envResp); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+		
+		// Add environments to results
+		allEnvironments = append(allEnvironments, envResp.Data...)
+		
+		// Check if there are more pages
+		if envResp.Metadata.Pagination.Next == "" {
+			break
+		}
+		
+		// Set next page token
+		nextPageToken = envResp.Metadata.Pagination.Next
+		log.Printf("Fetching next page of environments with token: %s", nextPageToken)
 	}
-
-	req.SetBasicAuth(c.apiKey, c.apiSecret)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// For debugging - print response body
-	body, _ := ioutil.ReadAll(resp.Body)
-	log.Printf("Environments API response: %s", string(body))
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned non-200 status: %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	var envResp EnvironmentsResponse
-	if err := json.Unmarshal(body, &envResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	log.Printf("Found %d environments", len(envResp.Data))
-	return envResp.Data, nil
+	
+	log.Printf("Found %d total environments", len(allEnvironments))
+	return allEnvironments, nil
 }
 
-// GetKafkaClusters retrieves Kafka clusters for a specific environment
+// GetKafkaClusters retrieves all Kafka clusters for a specific environment with pagination
 func (c *Client) GetKafkaClusters(environmentID string) ([]KafkaCluster, error) {
 	log.Printf("Fetching Kafka clusters for environment %s", environmentID)
-	path := fmt.Sprintf(kafkaClustersPath, environmentID)
-	req, err := http.NewRequest(http.MethodGet, baseURL+path, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	
+	var allClusters []KafkaCluster
+	nextPageToken := ""
+	
+	for {
+		// Prepare query parameters
+		queryParams := map[string]string{
+			"environment": environmentID,
+			"page_size":   fmt.Sprintf("%d", defaultPageSize),
+		}
+		
+		if nextPageToken != "" {
+			queryParams["page_token"] = nextPageToken
+		}
+		
+		// Make request
+		body, err := c.makeRequest(http.MethodGet, kafkaClustersPath, queryParams)
+		if err != nil {
+			return nil, err
+		}
+		
+		// Parse response
+		var clustersResp KafkaClustersResponse
+		if err := json.Unmarshal(body, &clustersResp); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+		
+		// Add clusters to results
+		allClusters = append(allClusters, clustersResp.Data...)
+		
+		// Check if there are more pages
+		if clustersResp.Metadata.Pagination.Next == "" {
+			break
+		}
+		
+		// Set next page token
+		nextPageToken = clustersResp.Metadata.Pagination.Next
+		log.Printf("Fetching next page of Kafka clusters with token: %s", nextPageToken)
 	}
-
-	req.SetBasicAuth(c.apiKey, c.apiSecret)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// For debugging - print response body
-	body, _ := ioutil.ReadAll(resp.Body)
-	log.Printf("Kafka Clusters API response: %s", string(body))
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned non-200 status: %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	var clustersResp KafkaClustersResponse
-	if err := json.Unmarshal(body, &clustersResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	log.Printf("Found %d Kafka clusters for environment %s", len(clustersResp.Data), environmentID)
-	return clustersResp.Data, nil
+	
+	log.Printf("Found %d total Kafka clusters for environment %s", len(allClusters), environmentID)
+	return allClusters, nil
 }
 
-// GetSchemaRegistries retrieves Schema Registry instances for a specific environment
+// GetSchemaRegistries retrieves all Schema Registry instances for a specific environment with pagination
 func (c *Client) GetSchemaRegistries(environmentID string) ([]SchemaRegistry, error) {
 	log.Printf("Fetching Schema Registry instances for environment %s", environmentID)
-	path := fmt.Sprintf(schemaRegistryPath, environmentID)
-	req, err := http.NewRequest(http.MethodGet, baseURL+path, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	
+	var allSchemaRegistries []SchemaRegistry
+	nextPageToken := ""
+	
+	for {
+		// Prepare query parameters
+		queryParams := map[string]string{
+			"environment": environmentID,
+			"page_size":   fmt.Sprintf("%d", defaultPageSize),
+		}
+		
+		if nextPageToken != "" {
+			queryParams["page_token"] = nextPageToken
+		}
+		
+		// Make request
+		body, err := c.makeRequest(http.MethodGet, schemaRegistryPath, queryParams)
+		if err != nil {
+			return nil, err
+		}
+		
+		// Parse response
+		var srResp SchemaRegistryResponse
+		if err := json.Unmarshal(body, &srResp); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+		
+		// Add schema registries to results
+		allSchemaRegistries = append(allSchemaRegistries, srResp.Data...)
+		
+		// Check if there are more pages
+		if srResp.Metadata.Pagination.Next == "" {
+			break
+		}
+		
+		// Set next page token
+		nextPageToken = srResp.Metadata.Pagination.Next
+		log.Printf("Fetching next page of Schema Registry instances with token: %s", nextPageToken)
 	}
-
-	req.SetBasicAuth(c.apiKey, c.apiSecret)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// For debugging - print response body
-	body, _ := ioutil.ReadAll(resp.Body)
-	log.Printf("Schema Registry API response: %s", string(body))
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned non-200 status: %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	var srResp SchemaRegistryResponse
-	if err := json.Unmarshal(body, &srResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	log.Printf("Found %d Schema Registry instances for environment %s", len(srResp.Data), environmentID)
-	return srResp.Data, nil
+	
+	log.Printf("Found %d total Schema Registry instances for environment %s", len(allSchemaRegistries), environmentID)
+	return allSchemaRegistries, nil
 }
 
-// GetKsqlDBs retrieves KSQL databases for a specific environment
+// GetKsqlDBs retrieves all KSQL databases for a specific environment with pagination
 func (c *Client) GetKsqlDBs(environmentID string) ([]KsqlDB, error) {
 	log.Printf("Fetching KSQL databases for environment %s", environmentID)
-	path := fmt.Sprintf(ksqlPath, environmentID)
-	req, err := http.NewRequest(http.MethodGet, baseURL+path, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	
+	var allKsqlDBs []KsqlDB
+	nextPageToken := ""
+	
+	for {
+		// Prepare query parameters
+		queryParams := map[string]string{
+			"environment": environmentID,
+			"page_size":   fmt.Sprintf("%d", defaultPageSize),
+		}
+		
+		if nextPageToken != "" {
+			queryParams["page_token"] = nextPageToken
+		}
+		
+		// Make request
+		body, err := c.makeRequest(http.MethodGet, ksqlPath, queryParams)
+		if err != nil {
+			return nil, err
+		}
+		
+		// Parse response
+		var ksqlResp KsqlDBResponse
+		if err := json.Unmarshal(body, &ksqlResp); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+		
+		// Add ksql databases to results
+		allKsqlDBs = append(allKsqlDBs, ksqlResp.Data...)
+		
+		// Check if there are more pages
+		if ksqlResp.Metadata.Pagination.Next == "" {
+			break
+		}
+		
+		// Set next page token
+		nextPageToken = ksqlResp.Metadata.Pagination.Next
+		log.Printf("Fetching next page of KSQL databases with token: %s", nextPageToken)
 	}
-
-	req.SetBasicAuth(c.apiKey, c.apiSecret)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// For debugging - print response body
-	body, _ := ioutil.ReadAll(resp.Body)
-	log.Printf("KSQL API response: %s", string(body))
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned non-200 status: %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	var ksqlResp KsqlDBResponse
-	if err := json.Unmarshal(body, &ksqlResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	log.Printf("Found %d KSQL databases for environment %s", len(ksqlResp.Data), environmentID)
-	return ksqlResp.Data, nil
+	
+	log.Printf("Found %d total KSQL databases for environment %s", len(allKsqlDBs), environmentID)
+	return allKsqlDBs, nil
 }
 
-// GetComputePools retrieves compute pools for a specific environment
+// GetComputePools retrieves all compute pools for a specific environment with pagination
 func (c *Client) GetComputePools(environmentID string) ([]ComputePool, error) {
 	log.Printf("Fetching compute pools for environment %s", environmentID)
-	path := fmt.Sprintf(computePoolsPath, environmentID)
-	req, err := http.NewRequest(http.MethodGet, baseURL+path, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	
+	var allComputePools []ComputePool
+	nextPageToken := ""
+	
+	for {
+		// Prepare query parameters
+		queryParams := map[string]string{
+			"environment": environmentID,
+			"page_size":   fmt.Sprintf("%d", defaultPageSize),
+		}
+		
+		if nextPageToken != "" {
+			queryParams["page_token"] = nextPageToken
+		}
+		
+		// Make request
+		body, err := c.makeRequest(http.MethodGet, computePoolsPath, queryParams)
+		if err != nil {
+			return nil, err
+		}
+		
+		// Parse response
+		var poolsResp ComputePoolsResponse
+		if err := json.Unmarshal(body, &poolsResp); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+		
+		// Add compute pools to results
+		allComputePools = append(allComputePools, poolsResp.Data...)
+		
+		// Check if there are more pages
+		if poolsResp.Metadata.Pagination.Next == "" {
+			break
+		}
+		
+		// Set next page token
+		nextPageToken = poolsResp.Metadata.Pagination.Next
+		log.Printf("Fetching next page of compute pools with token: %s", nextPageToken)
 	}
-
-	req.SetBasicAuth(c.apiKey, c.apiSecret)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// For debugging - print response body
-	body, _ := ioutil.ReadAll(resp.Body)
-	log.Printf("Compute Pools API response: %s", string(body))
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned non-200 status: %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	var poolsResp ComputePoolsResponse
-	if err := json.Unmarshal(body, &poolsResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	log.Printf("Found %d compute pools for environment %s", len(poolsResp.Data), environmentID)
-	return poolsResp.Data, nil
+	
+	log.Printf("Found %d total compute pools for environment %s", len(allComputePools), environmentID)
+	return allComputePools, nil
 }
 
 // GetConnectors retrieves connectors for a specific environment and cluster
+// Note: The connector API might not use the same pagination mechanism
 func (c *Client) GetConnectors(environmentID, clusterID string) ([]Connector, error) {
 	log.Printf("Fetching connectors for environment %s, cluster %s", environmentID, clusterID)
+	
 	path := fmt.Sprintf(connectorsBasePath, environmentID, clusterID)
-	req, err := http.NewRequest(http.MethodGet, baseURL+path, nil)
+	body, err := c.makeRequest(http.MethodGet, path, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, err
 	}
-
-	req.SetBasicAuth(c.apiKey, c.apiSecret)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// For debugging - print response body
-	body, _ := ioutil.ReadAll(resp.Body)
-	log.Printf("Connectors API response: %s", string(body))
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned non-200 status: %d, body: %s", resp.StatusCode, string(body))
-	}
-
+	
 	var connectorNames []string
 	if err := json.Unmarshal(body, &connectorNames); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-
+	
 	// Convert connector names to connector objects
 	connectors := make([]Connector, len(connectorNames))
 	for i, name := range connectorNames {
@@ -356,7 +483,7 @@ func (c *Client) GetConnectors(environmentID, clusterID string) ([]Connector, er
 			Environment: environmentID,
 		}
 	}
-
+	
 	log.Printf("Found %d connectors for environment %s, cluster %s", len(connectors), environmentID, clusterID)
 	return connectors, nil
 }
@@ -364,24 +491,24 @@ func (c *Client) GetConnectors(environmentID, clusterID string) ([]Connector, er
 // GetAllResources fetches all resources and formats them with consistent metadata
 func (c *Client) GetAllResources() ([]Resource, error) {
 	var resources []Resource
-
-	// Fetch environments
+	
+	// Fetch environments with pagination
 	environments, err := c.GetEnvironments()
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch environments: %w", err)
 	}
-
+	
 	// Create a map of environment IDs to names for easier lookup
 	envMap := make(map[string]string)
 	for _, env := range environments {
 		envMap[env.ID] = env.Name
 	}
-
+	
 	// Process each environment separately
 	for _, env := range environments {
 		log.Printf("Processing environment: %s (%s)", env.Name, env.ID)
 		
-		// Fetch Kafka clusters for this environment
+		// Fetch Kafka clusters for this environment with pagination
 		kafkaClusters, err := c.GetKafkaClusters(env.ID)
 		if err != nil {
 			log.Printf("Warning: failed to fetch Kafka clusters for environment %s: %v", env.ID, err)
@@ -426,8 +553,8 @@ func (c *Client) GetAllResources() ([]Resource, error) {
 				}
 			}
 		}
-
-		// Fetch Schema Registry instances for this environment
+		
+		// Fetch Schema Registry instances for this environment with pagination
 		schemaRegistries, err := c.GetSchemaRegistries(env.ID)
 		if err != nil {
 			log.Printf("Warning: failed to fetch Schema Registry instances for environment %s: %v", env.ID, err)
@@ -451,8 +578,8 @@ func (c *Client) GetAllResources() ([]Resource, error) {
 				})
 			}
 		}
-
-		// Fetch KSQL databases for this environment
+		
+		// Fetch KSQL databases for this environment with pagination
 		ksqlDBs, err := c.GetKsqlDBs(env.ID)
 		if err != nil {
 			log.Printf("Warning: failed to fetch KSQL databases for environment %s: %v", env.ID, err)
@@ -476,8 +603,8 @@ func (c *Client) GetAllResources() ([]Resource, error) {
 				})
 			}
 		}
-
-		// Fetch compute pools for this environment
+		
+		// Fetch compute pools for this environment with pagination
 		computePools, err := c.GetComputePools(env.ID)
 		if err != nil {
 			log.Printf("Warning: failed to fetch compute pools for environment %s: %v", env.ID, err)

@@ -23,14 +23,18 @@ var (
 
 // Target represents a target for Prometheus to scrape
 type Target struct {
-	Targets []string          `json:"targets"`
-	Labels  map[string]string `json:"labels"`
+	Targets []string            `json:"targets"`
+	Labels  map[string]string   `json:"labels"`
 	Params  map[string][]string `json:"params"`
 }
 
 // DiscoveryHandler handles the /discovery endpoint
 func DiscoveryHandler(client *confluent.Client, cache *cache.Cache, cacheDuration time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Check if we have cached data first, before potentially making API calls
+		cachedData, found := cache.Get(cacheKey)
+		var resourcesNeedFetching = !found
+		
 		// Parse query parameters
 		targetsParam := r.URL.Query().Get("targets")
 		if targetsParam == "" {
@@ -53,12 +57,11 @@ func DiscoveryHandler(client *confluent.Client, cache *cache.Cache, cacheDuratio
 			prefix = prefix + "_"
 		}
 
-		// Try to get data from cache first
-		cachedData, found := cache.Get(cacheKey)
+		// After validating parameters, fetch data if needed
 		var resources []confluent.Resource
 
-		if !found {
-			// Fetch data from Confluent API
+		if resourcesNeedFetching {
+			// Fetch data from Confluent API since parameters are valid
 			log.Println("Cache miss. Fetching data from Confluent API...")
 			
 			var err error
@@ -73,6 +76,7 @@ func DiscoveryHandler(client *confluent.Client, cache *cache.Cache, cacheDuratio
 			cache.Set(cacheKey, resources, cacheDuration)
 		} else {
 			// Use cached data
+			log.Println("Using cached data")
 			resources = cachedData.([]confluent.Resource)
 		}
 
@@ -87,6 +91,8 @@ func DiscoveryHandler(client *confluent.Client, cache *cache.Cache, cacheDuratio
 			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 			return
 		}
+		
+		log.Printf("Returned %d resources to Prometheus", len(response))
 	}
 }
 
