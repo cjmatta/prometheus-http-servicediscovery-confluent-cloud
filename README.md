@@ -1,5 +1,7 @@
 **Note:** This was an experiment with Claude Code, I don't know go, I don't write go, I just prompted.
 
+Problem Statement -- When customers of Confluent want to integrate Confluent Cloud metrics into Prometheus, they can scrape all resources with the non-human friendly resource IDs. This service connects to Confluent Cloud, and collects the metadata attached to those resource IDs and allows Prometheus to label metrics with more human-friendly information. 
+
 # Prometheus HTTP Service Discovery for Confluent Cloud
 
 This service provides an HTTP-based service discovery implementation for Prometheus to scrape metrics from Confluent Cloud.
